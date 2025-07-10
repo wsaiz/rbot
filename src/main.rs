@@ -66,15 +66,71 @@ struct GameState {
     my_board: Vec<Vec<bool>>,
     opponent_moves: Vec<(usize, usize)>,
     first_move: bool,
+    all_debuts: Vec<Vec<(usize, usize)>>,
+    total_moves: Vec<(usize, usize)>,
 }
 
 impl GameState {
     fn new() -> Self {
+        let all_debuts = vec![
+            vec![(15, 15), (16, 15), (14, 14), (13, 15)],
+            vec![(15, 15), (15, 14), (16, 16), (14, 14)],
+            vec![(15, 15), (14, 15), (16, 14), (13, 16)],
+            vec![(15, 15), (16, 16), (14, 14), (15, 13)],
+            vec![(15, 15), (17, 15), (13, 13), (14, 16)],
+            vec![(15, 15), (16, 16), (17, 17), (18, 18)],
+            vec![(15, 15), (14, 14), (13, 13), (12, 12)],
+            vec![(15, 15), (14, 16), (13, 17), (12, 18)],
+            vec![(15, 15), (16, 14), (17, 13), (18, 12)],
+            vec![(15, 15), (15, 16), (15, 17), (15, 18)],
+            vec![(15, 15), (15, 14), (15, 13), (15, 12)],
+            vec![(15, 15), (16, 15), (17, 15), (18, 15)],
+            vec![(15, 15), (14, 16), (13, 17), (14, 18)],
+            vec![(15, 15), (16, 14), (17, 13), (16, 12)],
+            vec![(15, 15), (14, 14), (13, 13), (14, 12)],
+            vec![(15, 15), (18, 15), (16, 16), (14, 15)],
+            vec![(15, 15), (12, 15), (14, 14), (16, 15)],
+        ];
+
         Self {
             my_board: vec![vec![false; BOARD_SIZE]; BOARD_SIZE],
             opponent_moves: Vec::new(),
             first_move: true,
+            all_debuts,
+            total_moves: Vec::new(),
         }
+    }
+
+    fn get_debut_move(&self) -> Option<(usize, usize)> {
+        let total_moves_count = self.total_moves.len();
+
+        let valid_debuts = self
+            .all_debuts
+            .iter()
+            .filter(|debut| {
+                for i in 0..self.total_moves.len() {
+                    if i >= debut.len() || debut[i] != self.total_moves[i] {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect::<Vec<_>>();
+
+        if valid_debuts.is_empty() {
+            return None;
+        }
+
+        let debut = valid_debuts.choose(&mut thread_rng())?;
+
+        if total_moves_count < debut.len() {
+            let (x, y) = debut[total_moves_count];
+            if self.is_empty(x, y) {
+                return Some((x, y));
+            }
+        }
+
+        None
     }
 
     fn reset(&mut self) {
@@ -83,6 +139,7 @@ impl GameState {
         }
         self.opponent_moves.clear();
         self.first_move = true;
+        self.total_moves.clear();
     }
 
     fn is_my_move(&self, x: usize, y: usize) -> bool {
@@ -128,7 +185,11 @@ impl GameState {
     }
 
     fn find_best_move(&self) -> Option<(usize, usize)> {
-        let mut best_score = -1;
+        if let Some((x, y)) = self.get_debut_move() {
+            return Some((x, y));
+        }
+
+        let mut best_score = i32::MIN;
         let mut best_moves = Vec::new();
 
         for y in 0..BOARD_SIZE {
@@ -137,42 +198,95 @@ impl GameState {
                     continue;
                 }
 
-                let mut my_max = 0;
-                let mut opp_max = 0;
+                let mut score = 0;
+                let mut critical_block = false;
+                let mut open_threes_my = 0;
+                let mut open_threes_opp = 0;
+
                 let directions = [(1, 0), (0, 1), (1, 1), (1, -1)];
 
                 for &(dx, dy) in &directions {
-                    my_max = my_max.max(self.count_in_line(x, y, dx, dy, true));
-                    opp_max = opp_max.max(self.count_in_line(x, y, dx, dy, false));
+                    let my_count = self.count_in_line(x, y, dx, dy, true);
+                    let opp_count = self.count_in_line(x, y, dx, dy, false);
+
+                    let my_open = self.is_open_ended(x, y, dx, dy, true);
+                    let opp_open = self.is_open_ended(x, y, dx, dy, false);
+
+                    if opp_count >= 4 {
+                        critical_block = true;
+                    }
+
+                    if opp_count == 3 && opp_open {
+                        score += 2500;
+                        open_threes_opp += 1;
+                    }
+
+                    if my_count == 3 && my_open {
+                        score += 1500;
+                        open_threes_my += 1;
+                    }
+
+                    score += match opp_count {
+                        5 => 100_000,
+                        4 => 10_000,
+                        3 => 2000,
+                        2 => 400,
+                        _ => 0,
+                    };
+
+                    score += match my_count {
+                        5 => 100_000,
+                        4 => 5000,
+                        3 => 1000,
+                        2 => 300,
+                        _ => 0,
+                    };
                 }
 
-                let score = match (my_max, opp_max) {
-                    (5, _) | (_, 5) => 10000,
-                    (4, _) => 1000,
-                    (_, 4) => 900,
-                    (3, _) => 500,
-                    (_, 3) => 450,
-                    (2, _) => 100,
-                    (_, 2) => 90,
-                    _ => {
-                        let dist = (x as isize - CENTER as isize).abs()
-                            + (y as isize - CENTER as isize).abs();
-                        (BOARD_SIZE as isize - dist) as i32
-                    }
-                };
+                if open_threes_my >= 2 {
+                    score += 5000;
+                }
+
+                if open_threes_opp >= 2 {
+                    score += 7000;
+                }
+
+                if critical_block {
+                    score += 100_000;
+                }
+
+                let dist =
+                    (x as isize - CENTER as isize).abs() + (y as isize - CENTER as isize).abs();
+                score -= dist as i32;
 
                 if score > best_score {
                     best_score = score;
                     best_moves.clear();
-                }
-
-                if score == best_score && !self.is_opponent_move(x, y) {
+                    best_moves.push((x, y));
+                } else if score == best_score {
                     best_moves.push((x, y));
                 }
             }
         }
 
         best_moves.choose(&mut thread_rng()).copied()
+    }
+
+    fn is_open_ended(&self, x: usize, y: usize, dx: isize, dy: isize, is_my: bool) -> bool {
+        let mut open_ends = 0;
+
+        for &dir in &[-1, 1] {
+            let nx = x as isize + dir * dx;
+            let ny = y as isize + dir * dy;
+            if nx >= 0 && ny >= 0 && nx < BOARD_SIZE as isize && ny < BOARD_SIZE as isize {
+                let (nx, ny) = (nx as usize, ny as usize);
+                if self.is_empty(nx, ny) {
+                    open_ends += 1;
+                }
+            }
+        }
+
+        open_ends == 2
     }
 }
 
@@ -217,10 +331,12 @@ fn handle_client(mut sock: TcpStream, state: Arc<Mutex<GameState>>) {
 
                             if !game.is_opponent_move(x, y) {
                                 game.opponent_moves.push((x, y));
+                                game.total_moves.push((x, y));
                             }
                             if let Some((bx, by)) = game.find_best_move() {
                                 if game.is_empty(bx, by) {
                                     game.my_board[by][bx] = true;
+                                    game.total_moves.push((bx, by));
                                     serde_json::to_string(&MoveResponse {
                                         r#move: CoordOut::from_usize(bx, by),
                                     })
