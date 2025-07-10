@@ -26,7 +26,6 @@ impl StrOrUsize {
         }
     }
 }
-
 #[derive(Deserialize, Clone, Debug)]
 struct CoordIn {
     x: StrOrUsize,
@@ -61,17 +60,19 @@ struct Reply {
     reply: String,
 }
 
+
 #[derive(Clone)]
 struct GameState {
-    my_board: Vec<Vec<bool>>,
-    opponent_moves: Vec<(usize, usize)>,
-    first_move: bool,
-    all_debuts: Vec<Vec<(usize, usize)>>,
-    total_moves: Vec<(usize, usize)>,
+    my_board: Vec<Vec<bool>>, 
+    opponent_moves: Vec<(usize, usize)>, 
+    first_move: bool, 
+    all_debuts: Vec<Vec<(usize, usize)>>, 
+    total_moves: Vec<(usize, usize)>, 
 }
 
 impl GameState {
     fn new() -> Self {
+        //набор заданных дебютов
         let all_debuts = vec![
             vec![(15, 15), (16, 15), (14, 14), (13, 15)],
             vec![(15, 15), (15, 14), (16, 16), (14, 14)],
@@ -104,7 +105,7 @@ impl GameState {
     fn get_debut_move(&self) -> Option<(usize, usize)> {
         let total_moves_count = self.total_moves.len();
 
-        let valid_debuts = self
+        let valid_debuts = self 
             .all_debuts
             .iter()
             .filter(|debut| {
@@ -117,11 +118,11 @@ impl GameState {
             })
             .collect::<Vec<_>>();
 
-        if valid_debuts.is_empty() {
+        if valid_debuts.is_empty() { 
             return None;
         }
 
-        let debut = valid_debuts.choose(&mut thread_rng())?;
+        let debut = valid_debuts.choose(&mut thread_rng())?; 
 
         if total_moves_count < debut.len() {
             let (x, y) = debut[total_moves_count];
@@ -132,7 +133,6 @@ impl GameState {
 
         None
     }
-
     fn reset(&mut self) {
         for row in &mut self.my_board {
             row.fill(false);
@@ -141,13 +141,14 @@ impl GameState {
         self.first_move = true;
         self.total_moves.clear();
     }
-
     fn is_my_move(&self, x: usize, y: usize) -> bool {
         self.my_board[y][x]
     }
+
     fn is_opponent_move(&self, x: usize, y: usize) -> bool {
         self.opponent_moves.contains(&(x, y))
     }
+
     fn is_empty(&self, x: usize, y: usize) -> bool {
         !self.is_my_move(x, y) && !self.is_opponent_move(x, y)
     }
@@ -185,93 +186,134 @@ impl GameState {
     }
 
     fn find_best_move(&self) -> Option<(usize, usize)> {
-        if let Some((x, y)) = self.get_debut_move() {
-            return Some((x, y));
-        }
+    let mut critical_blocks = Vec::new();
+    let mut dangerous_threes = Vec::new();
+    let mut dangerous_fours = Vec::new();
 
-        let mut best_score = i32::MIN;
-        let mut best_moves = Vec::new();
+    for y in 0..BOARD_SIZE {
+        for x in 0..BOARD_SIZE {
+            if !self.is_empty(x, y) {
+                continue;
+            }
 
-        for y in 0..BOARD_SIZE {
-            for x in 0..BOARD_SIZE {
-                if !self.is_empty(x, y) {
-                    continue;
+            let mut open_threes_opp = 0;
+            let mut fours_opp = 0;
+
+            let directions = [(1, 0), (0, 1), (1, 1), (1, -1)];
+            for &(dx, dy) in &directions {
+                let opp_count = self.count_in_line(x, y, dx, dy, false);
+                let opp_open = self.is_open_ended(x, y, dx, dy, false);
+
+                if opp_count >= 4 {
+                    critical_blocks.push((x, y));
+                    break;
                 }
 
-                let mut score = 0;
-                let mut critical_block = false;
-                let mut open_threes_my = 0;
-                let mut open_threes_opp = 0;
-
-                let directions = [(1, 0), (0, 1), (1, 1), (1, -1)];
-
-                for &(dx, dy) in &directions {
-                    let my_count = self.count_in_line(x, y, dx, dy, true);
-                    let opp_count = self.count_in_line(x, y, dx, dy, false);
-
-                    let my_open = self.is_open_ended(x, y, dx, dy, true);
-                    let opp_open = self.is_open_ended(x, y, dx, dy, false);
-
-                    if opp_count >= 4 {
-                        critical_block = true;
-                    }
-
-                    if opp_count == 3 && opp_open {
-                        score += 2500;
-                        open_threes_opp += 1;
-                    }
-
-                    if my_count == 3 && my_open {
-                        score += 1500;
-                        open_threes_my += 1;
-                    }
-
-                    score += match opp_count {
-                        5 => 100_000,
-                        4 => 10_000,
-                        3 => 2000,
-                        2 => 400,
-                        _ => 0,
-                    };
-
-                    score += match my_count {
-                        5 => 100_000,
-                        4 => 5000,
-                        3 => 1000,
-                        2 => 300,
-                        _ => 0,
-                    };
+                if opp_count == 3 && opp_open {
+                    open_threes_opp += 1;
                 }
 
-                if open_threes_my >= 2 {
-                    score += 5000;
-                }
-
-                if open_threes_opp >= 2 {
-                    score += 7000;
-                }
-
-                if critical_block {
-                    score += 100_000;
-                }
-
-                let dist =
-                    (x as isize - CENTER as isize).abs() + (y as isize - CENTER as isize).abs();
-                score -= dist as i32;
-
-                if score > best_score {
-                    best_score = score;
-                    best_moves.clear();
-                    best_moves.push((x, y));
-                } else if score == best_score {
-                    best_moves.push((x, y));
+                if opp_count == 4 {
+                    fours_opp += 1;
                 }
             }
-        }
 
-        best_moves.choose(&mut thread_rng()).copied()
+            if open_threes_opp >= 2 {
+                dangerous_threes.push((x, y)); 
+            }
+
+            if fours_opp >= 2 {
+                dangerous_fours.push((x, y)); 
+            }
+        }
     }
 
+    if !critical_blocks.is_empty() {
+        return critical_blocks.choose(&mut thread_rng()).copied();
+    }
+
+    if !dangerous_threes.is_empty() {
+        return dangerous_threes.choose(&mut thread_rng()).copied();
+    }
+
+    if !dangerous_fours.is_empty() {
+        return dangerous_fours.choose(&mut thread_rng()).copied();
+    }
+
+    if let Some((x, y)) = self.get_debut_move() {
+        return Some((x, y));
+    }
+
+    let mut best_score = i32::MIN;
+    let mut best_moves = Vec::new();
+
+    for y in 0..BOARD_SIZE {
+        for x in 0..BOARD_SIZE {
+            if !self.is_empty(x, y) {
+                continue;
+            }
+
+            let mut score = 0;
+            let mut open_threes_my = 0;
+            let mut open_threes_opp = 0;
+            let directions = [(1, 0), (0, 1), (1, 1), (1, -1)];
+
+            for &(dx, dy) in &directions {
+                let my_count = self.count_in_line(x, y, dx, dy, true);
+                let opp_count = self.count_in_line(x, y, dx, dy, false);
+                let my_open = self.is_open_ended(x, y, dx, dy, true);
+                let opp_open = self.is_open_ended(x, y, dx, dy, false);
+
+                if opp_count == 3 && opp_open {
+                    score += 2500;
+                    open_threes_opp += 1;
+                }
+
+                if my_count == 3 && my_open {
+                    score += 1500;
+                    open_threes_my += 1;
+                }
+
+                score += match opp_count {
+                    5 => 100_000,
+                    4 => 10_000,
+                    3 => 2000,
+                    2 => 400,
+                    _ => 0,
+                };
+
+                score += match my_count {
+                    5 => 100_000,
+                    4 => 5000,
+                    3 => 1000,
+                    2 => 300,
+                    _ => 0,
+                };
+            }
+
+            if open_threes_my >= 2 {
+                score += 5000;
+            }
+
+            if open_threes_opp >= 2 {
+                score += 7000;
+            }
+
+            let dist = (x as isize - CENTER as isize).abs() + (y as isize - CENTER as isize).abs();
+            score -= dist as i32;
+
+            if score > best_score {
+                best_score = score;
+                best_moves.clear();
+                best_moves.push((x, y));
+            } else if score == best_score {
+                best_moves.push((x, y));
+            }
+        }
+    }
+
+    best_moves.choose(&mut thread_rng()).copied()
+}
     fn is_open_ended(&self, x: usize, y: usize, dx: isize, dy: isize, is_my: bool) -> bool {
         let mut open_ends = 0;
 
