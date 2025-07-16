@@ -1,3 +1,4 @@
+
 use std::collections::HashMap;
 use std::env;
 use std::io::{BufRead, BufReader, Write};
@@ -53,6 +54,7 @@ struct Command {
 #[derive(Serialize)]
 struct MoveResponse {
     r#move: CoordOut,
+    team: &'static str,
 }
 
 #[derive(Serialize)]
@@ -69,10 +71,20 @@ struct GameState {
     all_debuts: Vec<Vec<(usize, usize)>>, 
     total_moves: Vec<(usize, usize)>, 
 }
+enum LineThreat {
+    Five,
+    OpenFour,
+    BlockedFour,
+    OpenThree,
+    BlockedThree,
+    Two,
+    Other,
+}
+
+
 
 impl GameState {
     fn new() -> Self {
-        //набор заданных дебютов
         let all_debuts = vec![
             vec![(15, 15), (16, 15), (14, 14), (13, 15)],
             vec![(15, 15), (15, 14), (16, 16), (14, 14)],
@@ -184,7 +196,42 @@ impl GameState {
 
         count
     }
+fn evaluate_line_type(&self, x: usize, y: usize, dx: isize, dy: isize, is_my: bool) -> LineThreat {
+    let mut line = Vec::new();
 
+    for offset in -4..=4 {
+        let nx = x as isize + offset * dx;
+        let ny = y as isize + offset * dy;
+
+        if nx < 0 || ny < 0 || nx >= BOARD_SIZE as isize || ny >= BOARD_SIZE as isize {
+            line.push('B'); 
+        } else {
+            let (nx, ny) = (nx as usize, ny as usize);
+            line.push(match (
+                self.is_my_move(nx, ny),
+                self.is_opponent_move(nx, ny),
+            ) {
+                (true, false) if is_my => 'X',
+                (false, true) if !is_my => 'O',
+                (false, false) => '.',
+                _ => 'B', 
+            });
+        }
+    }
+
+    let line_str: String = line.iter().collect();
+    let line = line_str.as_str();
+
+    match line {
+        l if l.contains("XXXXX") || l.contains("OOOOO") => LineThreat::Five,
+        l if l.contains(".XXXX.") || l.contains(".OOOO.") => LineThreat::OpenFour,
+        l if l.contains("XXXX.") || l.contains(".XXXX") || l.contains("OOOO.") || l.contains(".OOOO") => LineThreat::BlockedFour,
+        l if l.contains(".XXX.") || l.contains(".OOO.") => LineThreat::OpenThree,
+        l if l.contains("XXX.") || l.contains(".XXX") || l.contains("OOO.") || l.contains(".OOO") => LineThreat::BlockedThree,
+        l if l.contains("XX") || l.contains("OO") => LineThreat::Two,
+        _ => LineThreat::Other,
+    }
+}
     fn find_best_move(&self) -> Option<(usize, usize)> {
     let mut critical_blocks = Vec::new();
     let mut dangerous_threes = Vec::new();
@@ -201,29 +248,24 @@ impl GameState {
 
             let directions = [(1, 0), (0, 1), (1, 1), (1, -1)];
             for &(dx, dy) in &directions {
-                let opp_count = self.count_in_line(x, y, dx, dy, false);
-                let opp_open = self.is_open_ended(x, y, dx, dy, false);
-
-                if opp_count >= 4 {
-                    critical_blocks.push((x, y));
-                    break;
-                }
-
-                if opp_count == 3 && opp_open {
-                    open_threes_opp += 1;
-                }
-
-                if opp_count == 4 {
-                    fours_opp += 1;
+                let threat = self.evaluate_line_type(x, y, dx, dy, false);
+                match threat {
+                    LineThreat::Five | LineThreat::OpenFour => {
+                        critical_blocks.push((x, y));
+                        break;
+                    }
+                    LineThreat::OpenThree => open_threes_opp += 1,
+                    LineThreat::BlockedFour => fours_opp += 1,
+                    _ => {}
                 }
             }
 
             if open_threes_opp >= 2 {
-                dangerous_threes.push((x, y)); 
+                dangerous_threes.push((x, y));
             }
 
             if fours_opp >= 2 {
-                dangerous_fours.push((x, y)); 
+                dangerous_fours.push((x, y));
             }
         }
     }
@@ -256,39 +298,34 @@ impl GameState {
             let mut score = 0;
             let mut open_threes_my = 0;
             let mut open_threes_opp = 0;
-            let directions = [(1, 0), (0, 1), (1, 1), (1, -1)];
 
-            for &(dx, dy) in &directions {
-                let my_count = self.count_in_line(x, y, dx, dy, true);
-                let opp_count = self.count_in_line(x, y, dx, dy, false);
-                let my_open = self.is_open_ended(x, y, dx, dy, true);
-                let opp_open = self.is_open_ended(x, y, dx, dy, false);
+            for &(dx, dy) in &[(1, 0), (0, 1), (1, 1), (1, -1)] {
+                let my_threat = self.evaluate_line_type(x, y, dx, dy, true);
+                let opp_threat = self.evaluate_line_type(x, y, dx, dy, false);
 
-                if opp_count == 3 && opp_open {
-                    score += 2500;
-                    open_threes_opp += 1;
-                }
-
-                if my_count == 3 && my_open {
-                    score += 1500;
-                    open_threes_my += 1;
-                }
-
-                score += match opp_count {
-                    5 => 100_000,
-                    4 => 10_000,
-                    3 => 2000,
-                    2 => 400,
-                    _ => 0,
+                score += match my_threat {
+                    LineThreat::Five => 100_000,
+                    LineThreat::OpenFour => 50_000,
+                    LineThreat::BlockedFour => 10_000,
+                    LineThreat::OpenThree => { open_threes_my += 1; 1500 },
+                    LineThreat::BlockedThree => 500,
+                    LineThreat::Two => 300,
+                    LineThreat::Other => 0,
                 };
 
-                score += match my_count {
-                    5 => 100_000,
-                    4 => 5000,
-                    3 => 1000,
-                    2 => 300,
-                    _ => 0,
+                score += match opp_threat {
+                    LineThreat::Five => 100_000,
+                    LineThreat::OpenFour => 20_000,
+                    LineThreat::BlockedFour => 8_000,
+                    LineThreat::OpenThree => { open_threes_opp += 1; 2500 },
+                    LineThreat::BlockedThree => 1000,
+                    LineThreat::Two => 400,
+                    LineThreat::Other => 0,
                 };
+
+                if matches!(my_threat, LineThreat::OpenThree) && matches!(opp_threat, LineThreat::OpenThree) {
+                    score += 800;
+                }
             }
 
             if open_threes_my >= 2 {
@@ -297,6 +334,13 @@ impl GameState {
 
             if open_threes_opp >= 2 {
                 score += 7000;
+            }
+
+            if let Some(&(lx, ly)) = self.opponent_moves.last() {
+                let dist_last = (x as isize - lx as isize).abs() + (y as isize - ly as isize).abs();
+                if dist_last <= 2 {
+                    score += 300;
+                }
             }
 
             let dist = (x as isize - CENTER as isize).abs() + (y as isize - CENTER as isize).abs();
@@ -314,7 +358,7 @@ impl GameState {
 
     best_moves.choose(&mut thread_rng()).copied()
 }
-    fn is_open_ended(&self, x: usize, y: usize, dx: isize, dy: isize, is_my: bool) -> bool {
+    fn is_open_ended(&self, x: usize, y: usize, dx: isize, dy: isize, _is_myy: bool) -> bool {
         let mut open_ends = 0;
 
         for &dir in &[-1, 1] {
@@ -360,6 +404,7 @@ fn handle_client(mut sock: TcpStream, state: Arc<Mutex<GameState>>) {
                             game.first_move = false;
                             serde_json::to_string(&MoveResponse {
                                 r#move: CoordOut::from_usize(CENTER, CENTER),
+                                team: "team crabs",
                             })
                             .unwrap()
                         } else {
@@ -381,6 +426,7 @@ fn handle_client(mut sock: TcpStream, state: Arc<Mutex<GameState>>) {
                                     game.total_moves.push((bx, by));
                                     serde_json::to_string(&MoveResponse {
                                         r#move: CoordOut::from_usize(bx, by),
+                                        team: "team crabs",
                                     })
                                     .unwrap()
                                 } else {
