@@ -5,10 +5,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
-
 use rand::seq::SliceRandom;
-use rand::thread_rng;
 use serde::{Deserialize, Serialize};
+
+
 
 const BOARD_SIZE: usize = 31;
 const CENTER: usize = 15;
@@ -68,7 +68,6 @@ struct GameState {
     my_board: Vec<Vec<bool>>, 
     opponent_moves: Vec<(usize, usize)>, 
     first_move: bool, 
-    all_debuts: Vec<Vec<(usize, usize)>>, 
     total_moves: Vec<(usize, usize)>, 
 }
 enum LineThreat {
@@ -85,66 +84,14 @@ enum LineThreat {
 
 impl GameState {
     fn new() -> Self {
-        let all_debuts = vec![
-            vec![(15, 15), (16, 15), (14, 14), (13, 15)],
-            vec![(15, 15), (15, 14), (16, 16), (14, 14)],
-            vec![(15, 15), (14, 15), (16, 14), (13, 16)],
-            vec![(15, 15), (16, 16), (14, 14), (15, 13)],
-            vec![(15, 15), (17, 15), (13, 13), (14, 16)],
-            vec![(15, 15), (16, 16), (17, 17), (18, 18)],
-            vec![(15, 15), (14, 14), (13, 13), (12, 12)],
-            vec![(15, 15), (14, 16), (13, 17), (12, 18)],
-            vec![(15, 15), (16, 14), (17, 13), (18, 12)],
-            vec![(15, 15), (15, 16), (15, 17), (15, 18)],
-            vec![(15, 15), (15, 14), (15, 13), (15, 12)],
-            vec![(15, 15), (16, 15), (17, 15), (18, 15)],
-            vec![(15, 15), (14, 16), (13, 17), (14, 18)],
-            vec![(15, 15), (16, 14), (17, 13), (16, 12)],
-            vec![(15, 15), (14, 14), (13, 13), (14, 12)],
-            vec![(15, 15), (18, 15), (16, 16), (14, 15)],
-            vec![(15, 15), (12, 15), (14, 14), (16, 15)],
-        ];
-
         Self {
             my_board: vec![vec![false; BOARD_SIZE]; BOARD_SIZE],
             opponent_moves: Vec::new(),
             first_move: true,
-            all_debuts,
             total_moves: Vec::new(),
         }
     }
 
-    fn get_debut_move(&self) -> Option<(usize, usize)> {
-        let total_moves_count = self.total_moves.len();
-
-        let valid_debuts = self 
-            .all_debuts
-            .iter()
-            .filter(|debut| {
-                for i in 0..self.total_moves.len() {
-                    if i >= debut.len() || debut[i] != self.total_moves[i] {
-                        return false;
-                    }
-                }
-                true
-            })
-            .collect::<Vec<_>>();
-
-        if valid_debuts.is_empty() { 
-            return None;
-        }
-
-        let debut = valid_debuts.choose(&mut thread_rng())?; 
-
-        if total_moves_count < debut.len() {
-            let (x, y) = debut[total_moves_count];
-            if self.is_empty(x, y) {
-                return Some((x, y));
-            }
-        }
-
-        None
-    }
     fn reset(&mut self) {
         for row in &mut self.my_board {
             row.fill(false);
@@ -165,216 +112,147 @@ impl GameState {
         !self.is_my_move(x, y) && !self.is_opponent_move(x, y)
     }
 
-    fn count_in_line(&self, x: usize, y: usize, dx: isize, dy: isize, is_my: bool) -> i32 {
-        let mut count = 1;
-
-        for dir in [-1, 1] {
-            let mut step = 1;
-            while step < 5 {
-                let nx = x as isize + dir * dx * step;
-                let ny = y as isize + dir * dy * step;
-                if nx < 0 || ny < 0 || nx >= BOARD_SIZE as isize || ny >= BOARD_SIZE as isize {
-                    break;
-                }
-
-                let (nx, ny) = (nx as usize, ny as usize);
-                let occupied = if is_my {
-                    self.is_my_move(nx, ny)
-                } else {
-                    self.is_opponent_move(nx, ny)
-                };
-
-                if occupied {
-                    count += 1;
-                } else {
-                    break;
-                }
-
-                step += 1;
-            }
-        }
-
-        count
-    }
+    
 fn evaluate_line_type(&self, x: usize, y: usize, dx: isize, dy: isize, is_my: bool) -> LineThreat {
-    let mut line = Vec::new();
+        let mut line = Vec::new();
 
-    for offset in -4..=4 {
-        let nx = x as isize + offset * dx;
-        let ny = y as isize + offset * dy;
+        for offset in -4..=4 {
+            let nx = x as isize + offset * dx;
+            let ny = y as isize + offset * dy;
 
-        if nx < 0 || ny < 0 || nx >= BOARD_SIZE as isize || ny >= BOARD_SIZE as isize {
-            line.push('B'); 
-        } else {
-            let (nx, ny) = (nx as usize, ny as usize);
-            line.push(match (
-                self.is_my_move(nx, ny),
-                self.is_opponent_move(nx, ny),
-            ) {
-                (true, false) if is_my => 'X',
-                (false, true) if !is_my => 'O',
-                (false, false) => '.',
-                _ => 'B', 
-            });
-        }
-    }
-
-    let line_str: String = line.iter().collect();
-    let line = line_str.as_str();
-
-    match line {
-        l if l.contains("XXXXX") || l.contains("OOOOO") => LineThreat::Five,
-        l if l.contains(".XXXX.") || l.contains(".OOOO.") => LineThreat::OpenFour,
-        l if l.contains("XXXX.") || l.contains(".XXXX") || l.contains("OOOO.") || l.contains(".OOOO") => LineThreat::BlockedFour,
-        l if l.contains(".XXX.") || l.contains(".OOO.") => LineThreat::OpenThree,
-        l if l.contains("XXX.") || l.contains(".XXX") || l.contains("OOO.") || l.contains(".OOO") => LineThreat::BlockedThree,
-        l if l.contains("XX") || l.contains("OO") => LineThreat::Two,
-        _ => LineThreat::Other,
-    }
-}
-    fn find_best_move(&self) -> Option<(usize, usize)> {
-    let mut critical_blocks = Vec::new();
-    let mut dangerous_threes = Vec::new();
-    let mut dangerous_fours = Vec::new();
-
-    for y in 0..BOARD_SIZE {
-        for x in 0..BOARD_SIZE {
-            if !self.is_empty(x, y) {
-                continue;
-            }
-
-            let mut open_threes_opp = 0;
-            let mut fours_opp = 0;
-
-            let directions = [(1, 0), (0, 1), (1, 1), (1, -1)];
-            for &(dx, dy) in &directions {
-                let threat = self.evaluate_line_type(x, y, dx, dy, false);
-                match threat {
-                    LineThreat::Five | LineThreat::OpenFour => {
-                        critical_blocks.push((x, y));
-                        break;
-                    }
-                    LineThreat::OpenThree => open_threes_opp += 1,
-                    LineThreat::BlockedFour => fours_opp += 1,
-                    _ => {}
-                }
-            }
-
-            if open_threes_opp >= 2 {
-                dangerous_threes.push((x, y));
-            }
-
-            if fours_opp >= 2 {
-                dangerous_fours.push((x, y));
-            }
-        }
-    }
-
-    if !critical_blocks.is_empty() {
-        return critical_blocks.choose(&mut thread_rng()).copied();
-    }
-
-    if !dangerous_threes.is_empty() {
-        return dangerous_threes.choose(&mut thread_rng()).copied();
-    }
-
-    if !dangerous_fours.is_empty() {
-        return dangerous_fours.choose(&mut thread_rng()).copied();
-    }
-
-    if let Some((x, y)) = self.get_debut_move() {
-        return Some((x, y));
-    }
-
-    let mut best_score = i32::MIN;
-    let mut best_moves = Vec::new();
-
-    for y in 0..BOARD_SIZE {
-        for x in 0..BOARD_SIZE {
-            if !self.is_empty(x, y) {
-                continue;
-            }
-
-            let mut score = 0;
-            let mut open_threes_my = 0;
-            let mut open_threes_opp = 0;
-
-            for &(dx, dy) in &[(1, 0), (0, 1), (1, 1), (1, -1)] {
-                let my_threat = self.evaluate_line_type(x, y, dx, dy, true);
-                let opp_threat = self.evaluate_line_type(x, y, dx, dy, false);
-
-                score += match my_threat {
-                    LineThreat::Five => 100_000,
-                    LineThreat::OpenFour => 50_000,
-                    LineThreat::BlockedFour => 10_000,
-                    LineThreat::OpenThree => { open_threes_my += 1; 1500 },
-                    LineThreat::BlockedThree => 500,
-                    LineThreat::Two => 300,
-                    LineThreat::Other => 0,
-                };
-
-                score += match opp_threat {
-                    LineThreat::Five => 100_000,
-                    LineThreat::OpenFour => 20_000,
-                    LineThreat::BlockedFour => 8_000,
-                    LineThreat::OpenThree => { open_threes_opp += 1; 2500 },
-                    LineThreat::BlockedThree => 1000,
-                    LineThreat::Two => 400,
-                    LineThreat::Other => 0,
-                };
-
-                if matches!(my_threat, LineThreat::OpenThree) && matches!(opp_threat, LineThreat::OpenThree) {
-                    score += 800;
-                }
-            }
-
-            if open_threes_my >= 2 {
-                score += 5000;
-            }
-
-            if open_threes_opp >= 2 {
-                score += 7000;
-            }
-
-            if let Some(&(lx, ly)) = self.opponent_moves.last() {
-                let dist_last = (x as isize - lx as isize).abs() + (y as isize - ly as isize).abs();
-                if dist_last <= 2 {
-                    score += 300;
-                }
-            }
-
-            let dist = (x as isize - CENTER as isize).abs() + (y as isize - CENTER as isize).abs();
-            score -= dist as i32;
-
-            if score > best_score {
-                best_score = score;
-                best_moves.clear();
-                best_moves.push((x, y));
-            } else if score == best_score {
-                best_moves.push((x, y));
-            }
-        }
-    }
-
-    best_moves.choose(&mut thread_rng()).copied()
-}
-    fn is_open_ended(&self, x: usize, y: usize, dx: isize, dy: isize, _is_myy: bool) -> bool {
-        let mut open_ends = 0;
-
-        for &dir in &[-1, 1] {
-            let nx = x as isize + dir * dx;
-            let ny = y as isize + dir * dy;
-            if nx >= 0 && ny >= 0 && nx < BOARD_SIZE as isize && ny < BOARD_SIZE as isize {
+            if nx < 0 || ny < 0 || nx >= BOARD_SIZE as isize || ny >= BOARD_SIZE as isize {
+                line.push('B');
+            } else {
                 let (nx, ny) = (nx as usize, ny as usize);
-                if self.is_empty(nx, ny) {
-                    open_ends += 1;
+                line.push(match (
+                    self.is_my_move(nx, ny),
+                    self.is_opponent_move(nx, ny),
+                ) {
+                    (true, false) if is_my => 'X',
+                    (false, true) if !is_my => 'O',
+                    (false, false) => '.',
+                    _ => 'B',
+                });
+            }
+        }
+
+        let line_str: String = line.iter().collect();
+        let s = line_str.as_str();
+
+        let (five, open4, block4, open3, block3, two) = if is_my {
+            ("XXXXX", ".XXXX.", ["XXXX.", ".XXXX", "X.XXX", "XX.XX"], ".XXX.", ["XXX.", ".XXX", "X.XX", "XX.X"], "XX")
+        } else {
+            ("OOOOO", ".OOOO.", ["OOOO.", ".OOOO", "O.OOO", "OO.OO"], ".OOO.", ["OOO.", ".OOO", "O.OO", "OO.O"], "OO")
+        };
+
+        if s.contains(five) {
+            LineThreat::Five
+        } else if s.contains(open4) {
+            LineThreat::OpenFour
+        } else if block4.iter().any(|pat| s.contains(pat)) {
+            LineThreat::BlockedFour
+        } else if s.contains(open3) {
+            LineThreat::OpenThree
+        } else if block3.iter().any(|pat| s.contains(pat)) {
+            LineThreat::BlockedThree
+        } else if s.contains(two) {
+            LineThreat::Two
+        } else {
+            LineThreat::Other
+        }
+    }
+
+   fn find_best_move(&self) -> Option<(usize, usize)> {
+        let mut rng = rand::thread_rng();
+
+        for y in 0..BOARD_SIZE {
+            for x in 0..BOARD_SIZE {
+                if !self.is_empty(x, y) {
+                    continue;
+                }
+                let mut my_fours = 0;
+                let mut my_threes = 0;
+                for &(dx, dy) in &[(1, 0), (0, 1), (1, 1), (1, -1)] {
+                    match self.evaluate_line_type(x, y, dx, dy, true) {
+                        LineThreat::OpenFour => my_fours += 1,
+                        LineThreat::OpenThree => my_threes += 1,
+                        _ => {}
+                    }
+                }
+                if my_fours > 0 || my_threes >= 2 {
+                    return Some((x, y));
                 }
             }
         }
 
-        open_ends == 2
+        let mut best_moves = vec![];
+        let mut best_score = i32::MIN;
+
+        for y in 0..BOARD_SIZE {
+            for x in 0..BOARD_SIZE {
+                if !self.is_empty(x, y) {
+                    continue;
+                }
+
+                let mut score = 0;
+                let mut my_open_threes = 0;
+                let mut my_open_fours = 0;
+                let mut opp_open_threes = 0;
+                let mut opp_open_fours = 0;
+
+                for &(dx, dy) in &[(1, 0), (0, 1), (1, 1), (1, -1)] {
+                    match self.evaluate_line_type(x, y, dx, dy, true) {
+                        LineThreat::Five => score += 1_000_000,
+                        LineThreat::OpenFour => { my_open_fours += 1; score += 80_000; },
+                        LineThreat::BlockedFour => score += 12_000,
+                        LineThreat::OpenThree => { my_open_threes += 1; score += 3_000; },
+                        LineThreat::BlockedThree => score += 500,
+                        LineThreat::Two => score += 100,
+                        _ => {}
+                    }
+                    match self.evaluate_line_type(x, y, dx, dy, false) {
+                        LineThreat::Five => score += 900_000,
+                        LineThreat::OpenFour => { opp_open_fours += 1; score += 55_000; },
+                        LineThreat::BlockedFour => score += 12_000,
+                        LineThreat::OpenThree => { opp_open_threes += 1; score += 3_000; },
+                        LineThreat::BlockedThree => score += 1000,
+                        LineThreat::Two => score += 200,
+                        _ => {}
+                    }
+                }
+
+                if my_open_fours > 0 && my_open_threes > 0 {
+                    score += 150_000;
+                }
+                if opp_open_fours > 0 && opp_open_threes > 0 {
+                    score += 100_000;
+                }
+                if my_open_threes >= 2 {
+                    score += 10_000;
+                }
+                if opp_open_threes >= 2 {
+                    score += 7_000;
+                }
+
+                let dist = (x as isize - CENTER as isize).abs() + (y as isize - CENTER as isize).abs();
+                score -= dist as i32;
+
+                if score > best_score {
+                    best_score = score;
+                    best_moves.clear();
+                    best_moves.push((x, y));
+                } else if score == best_score {
+                    best_moves.push((x, y));
+                }
+            }
+        }
+
+        best_moves.choose(&mut rng).copied()
     }
 }
+
+
+
 
 fn error(msg: &str) -> HashMap<&str, &str> {
     HashMap::from([("error", msg)])
